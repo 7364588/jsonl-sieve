@@ -1,0 +1,14 @@
+name: Feature request
+description: Describe a use case and the behavior it needs
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and a small example
+      description: Please use synthetic data.

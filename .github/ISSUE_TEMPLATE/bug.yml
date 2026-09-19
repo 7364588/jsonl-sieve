@@ -1,0 +1,20 @@
+name: Bug report
+description: Report a reproducible problem
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Use synthetic examples. Remove secrets, private data and local usernames.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Package version, Python version and operating system
