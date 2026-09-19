@@ -11,6 +11,15 @@ import sys
 from . import Config, Report, __version__, profile
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    def _print_message(self, message, file=None):
+        # argparse normally suppresses write errors. Let the main boundary
+        # handle them, including immediate failures from unbuffered streams.
+        if message:
+            destination = sys.stderr if file is None else file
+            destination.write(message)
+
+
 def _positive(value: str) -> int:
     try:
         result = int(value)
@@ -56,20 +65,37 @@ def _human(report: Report) -> str:
     return "\n".join(lines)
 
 
-def _discard_failed_stdout() -> None:
+def _discard_failed_stream(stream) -> None:
     # A failed flush can leave data buffered. Redirect the descriptor so the
     # interpreter's final flush cannot emit another error or change exit 2 to
     # exit 120 after main has already handled the output failure.
     try:
         with open(os.devnull, "wb") as sink:
-            os.dup2(sink.fileno(), sys.stdout.fileno())
+            os.dup2(sink.fileno(), stream.fileno())
     except (AttributeError, OSError, ValueError):
         # An embedded caller may supply a stream without a file descriptor.
         pass
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+def _report_io_failure() -> int:
+    # Either output stream may have failed, including argparse's help, version,
+    # or usage output. Flush both inside the boundary before interpreter exit.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, OverflowError, ValueError):
+            _discard_failed_stream(stream)
+    try:
+        # Exception messages can contain input data or paths; keep this fixed.
+        sys.stderr.write("jsonl-sieve: unable to read input or write output.\n")
+        sys.stderr.flush()
+    except (OSError, OverflowError, ValueError):
+        _discard_failed_stream(sys.stderr)
+    return 2
+
+
+def _run(argv: list[str] | None) -> int:
+    parser = _ArgumentParser(
         prog="jsonl-sieve", description="Validate UTF-8 JSON Lines and summarize record shapes."
     )
     parser.add_argument("path", nargs="?", default="-", help="input file, or - for binary stdin (default)")
@@ -90,19 +116,24 @@ def main(argv: list[str] | None = None) -> int:
         blank_lines=args.blank_lines,
         bom=args.bom,
     )
-    writing_output = False
-    try:
-        source = nullcontext(sys.stdin.buffer) if args.path == "-" else open(args.path, "rb")
-        with source as stream:
-            report = profile(stream, config)
-        output = json.dumps(report.to_dict(), ensure_ascii=True, sort_keys=True, indent=2) if args.format == "json" else _human(report)
-        writing_output = True
-        sys.stdout.write(output + "\n")
-        sys.stdout.flush()
-    except (OSError, OverflowError):
-        if writing_output:
-            _discard_failed_stdout()
-        # Do not print exception messages: they can include paths or input data.
-        sys.stderr.write("jsonl-sieve: unable to read input or write output.\n")
-        return 2
+    source = nullcontext(sys.stdin.buffer) if args.path == "-" else open(args.path, "rb")
+    with source as stream:
+        report = profile(stream, config)
+    output = json.dumps(report.to_dict(), ensure_ascii=True, sort_keys=True, indent=2) if args.format == "json" else _human(report)
+    sys.stdout.write(output + "\n")
     return 0 if report.valid else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        try:
+            status = _run(argv)
+        except SystemExit as error:
+            # argparse exits for help, version, and usage errors. Its buffered
+            # output still needs to be flushed within the I/O error boundary.
+            status = int(error.code or 0)
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except (OSError, OverflowError):
+        return _report_io_failure()
+    return status

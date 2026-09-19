@@ -50,24 +50,67 @@ class CliTests(unittest.TestCase):
         self.assertNotIn(b"synthetic-secret-path", result.stderr)
 
     def test_closed_stdout_exits_two_without_shutdown_traceback(self):
+        for output_format in ("human", "json"):
+            for unbuffered in (False, True):
+                with self.subTest(output_format=output_format, unbuffered=unbuffered):
+                    result = self.run_with_closed_pipes(
+                        "--format", output_format, closed=("stdout",),
+                        content=b"{}\n", unbuffered=unbuffered,
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertEqual(
+                        result.stderr.strip(),
+                        b"jsonl-sieve: unable to read input or write output.",
+                    )
+
+    def run_with_closed_pipes(self, *args, closed, content=b"", unbuffered=False):
         env = os.environ.copy()
         env["PYTHONPATH"] = str(ROOT / "src")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
-        for output_format in ("human", "json"):
-            with self.subTest(output_format=output_format):
-                with subprocess.Popen(
-                    [sys.executable, "-m", "jsonl_sieve", "--format", output_format],
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, env=env, cwd=ROOT,
-                ) as process:
-                    process.stdout.close()
-                    process.stdout = None
-                    _, error = process.communicate(input=b"{}\n", timeout=20)
-                self.assertEqual(process.returncode, 2, error)
-                self.assertEqual(
-                    error.strip(),
-                    b"jsonl-sieve: unable to read input or write output.",
+        env["PYTHONUNBUFFERED"] = "1" if unbuffered else ""
+        command = [sys.executable, "-m", "jsonl_sieve", *args]
+        with subprocess.Popen(
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=env, cwd=ROOT,
+        ) as process:
+            for name in closed:
+                getattr(process, name).close()
+                setattr(process, name, None)
+            output, error = process.communicate(input=content, timeout=20)
+        return subprocess.CompletedProcess(command, process.returncode, output, error)
+
+    def test_help_and_version_with_closed_stdout_exit_two(self):
+        for option in ("--help", "--version"):
+            for unbuffered in (False, True):
+                with self.subTest(option=option, unbuffered=unbuffered):
+                    result = self.run_with_closed_pipes(
+                        option, closed=("stdout",), unbuffered=unbuffered,
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertEqual(
+                        result.stderr.strip(),
+                        b"jsonl-sieve: unable to read input or write output.",
+                    )
+
+    def test_usage_and_io_errors_with_closed_stderr_exit_two(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            missing = str(Path(temp) / "synthetic-missing.jsonl")
+            for arguments in (("--unknown",), (missing,)):
+                for unbuffered in (False, True):
+                    with self.subTest(arguments=arguments, unbuffered=unbuffered):
+                        result = self.run_with_closed_pipes(
+                            *arguments, closed=("stderr",), unbuffered=unbuffered,
+                        )
+                        self.assertEqual(result.returncode, 2)
+                        self.assertEqual(result.stdout, b"")
+
+    def test_both_output_pipes_closed_exit_two(self):
+        for unbuffered in (False, True):
+            with self.subTest(unbuffered=unbuffered):
+                result = self.run_with_closed_pipes(
+                    closed=("stdout", "stderr"), content=b"{}\n", unbuffered=unbuffered,
                 )
+                self.assertEqual(result.returncode, 2)
 
     def test_file_input(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as temp:
